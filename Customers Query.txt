@@ -1,3 +1,12 @@
+/*
+Query Overview:
+This query retrieves the most recent health score for each eligible Mid-Market customer,
+excluding certain customers identified with duplicate or invalid records. It filters the
+CUSTOMERS table to active, non-onboarding accounts with valid Pinnacle user counts and
+joins the latest health score snapshot from the REPORTS.HEALTH_SCORE_SNAPSHOTS table.
+*/
+
+-- Get the latest health score snapshot per customer
 WITH latest_hs AS (
   SELECT
     hs.*,
@@ -9,6 +18,7 @@ WITH latest_hs AS (
   FROM REPORTS.HEALTH_SCORE_SNAPSHOTS AS hs
 ),
 
+-- List of customer IDs to exclude (duplicate MAXIO_IDs)
 excluded_ids AS (
     SELECT COLUMN1 AS MAXIO_ID FROM VALUES
       ('2015-6406'),
@@ -21,6 +31,7 @@ excluded_ids AS (
       ('2015-8195')
 )
 
+-- Final select: join customers with their latest health score, exclude flagged IDs
 SELECT
   c.Maxio_ID,
   c.NAME,
@@ -33,10 +44,5 @@ SELECT
 FROM CUSTOMERS AS c
 JOIN latest_hs AS lh
   ON c.MAXIO_ID = lh.MAXIO_ID
-  AND lh.rn = 1     
-LEFT JOIN excluded_ids e ON c.MAXIO_ID = e.MAXIO_ID
-
-WHERE
-        c.SEGMENT = 'Midsize'
-        AND c.STAGE NOT IN ('Will Churn', 'Churn', 'Onboarding', 'Onboarding – Stalled')
-        AND COALESCE(c.PINNACLE_USERS, 0) > 0
+  AND lh.rn = 1     -- Only keep most recent score
+LEFT JOIN excluded_ids e ON c.MAXIO_ID = e

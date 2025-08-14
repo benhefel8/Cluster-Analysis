@@ -1,3 +1,15 @@
+/*
+Query Overview:
+This query builds a dataset of active Mid-Market customers with Autodesk Content Library subscriptions,
+calculates their Pinnacle usage metrics, and assigns a weighted usage score for clustering analysis.
+It begins by excluding customers with duplicate or invalid records, filters to eligible active accounts,
+retrieves subscription and tenant details, maps tenants to their users, joins in login activity during
+the subscription period, and aggregates engagement metrics. It then calculates normalized metrics
+(e.g., average logins per day, adoption rate), converts them into percentile scores, and combines
+them into a composite USAGE_SCORE using weighted criteria.
+*/
+
+-- List of customer IDs to exclude (duplicate subscriptions or other disqualifiers)
 WITH excluded_ids AS (
     SELECT COLUMN1 AS MAXIO_ID FROM VALUES
       ('2015-6406'),
@@ -10,6 +22,7 @@ WITH excluded_ids AS (
       ('2015-8195')
 ),
 
+-- Filter customers to active, midsize, non-onboarding, valid user counts
 filtered_customers AS (
     SELECT 
         c.MAXIO_ID,
@@ -32,7 +45,7 @@ filtered_customers AS (
         AND e.MAXIO_ID IS NULL
 ),
 
--- Active Autodesk Content Library transaction per customer
+-- Get each customer’s active Autodesk Content Library subscription period
 customer_transaction_periods AS (
     SELECT 
         fc.*,
@@ -48,6 +61,7 @@ customer_transaction_periods AS (
         AND CURRENT_DATE BETWEEN t.START_DATE AND t.END_DATE
 ),
 
+-- Link subscription info to tenant details
 customer_tenants AS (
     SELECT 
         c.*,
@@ -61,6 +75,7 @@ customer_tenants AS (
         ON c.PINNACLE_ID = t.PINNACLE_ID
 ),
 
+-- Map tenants to their users
 tenant_users_map AS (
     SELECT DISTINCT
         ct.MAXIO_ID, 
@@ -88,6 +103,7 @@ tenant_users_map AS (
     WHERE ct.TENANT_ID IS NOT NULL
 ),
 
+-- Get raw login events for each tenant user within subscription period
 login_raw AS (
     SELECT 
         tum.MAXIO_ID,
@@ -113,6 +129,7 @@ login_raw AS (
        AND l.LOGIN_DATE <= tum.END_DATE
 ),
 
+-- Roll up logins to customer-level engagement counts
 customer_login_rollup AS (
     SELECT
         MAXIO_ID,
@@ -145,19 +162,23 @@ customer_login_rollup AS (
         CURRENT_CUSTOMER
 ),
 
+-- Calculate normalized engagement metrics per customer
 base_metrics AS (
     SELECT 
         *,
+        -- Avg logins per day logged in
         CASE 
             WHEN COALESCE(UNIQUE_LOGIN_DAYS, 0) > 0 
             THEN ROUND(TOTAL_LOGINS * 1.0 / UNIQUE_LOGIN_DAYS, 2)
             ELSE 0 
         END AS AVG_LOGINS_PER_DAY,
+        -- % of Pinnacle users who logged in
         CASE 
             WHEN COALESCE(PINNACLE_USERS, 0) > 0 
             THEN ROUND(UNIQUE_USERS_WITH_LOGINS * 1.0 / PINNACLE_USERS, 3)
             ELSE 0 
         END AS USER_ADOPTION_RATE,
+        -- Total logins per Pinnacle user
         CASE 
             WHEN COALESCE(PINNACLE_USERS, 0) > 0 
             THEN ROUND(TOTAL_LOGINS * 1.0 / PINNACLE_USERS, 2)
@@ -166,6 +187,7 @@ base_metrics AS (
     FROM customer_login_rollup
 ),
 
+-- Convert metrics to percentile scores for comparison
 usage_scores AS (
     SELECT 
         *,
@@ -176,6 +198,7 @@ usage_scores AS (
     FROM base_metrics
 )
 
+-- Final select with weighted usage score calculation
 SELECT 
     MAXIO_ID,
     CUSTOMER_NAME,
@@ -197,4 +220,4 @@ SELECT
          COALESCE(ADOPTION_SCORE, 0) * 0.15) * 100, 1
     ) AS USAGE_SCORE
 FROM usage_scores
-WHERE PINNACLE_USERS <= '864'
+WHERE PINNACLE_USERS <= '864';

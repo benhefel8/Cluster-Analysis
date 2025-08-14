@@ -1,3 +1,11 @@
+/*
+Query Overview:
+This query identifies Mid-Market customers with more than one active Autodesk Content Library
+(ACL) subscription at the same time. Customers with duplicate active ACL transactions are flagged,
+as this may cause issues with reporting or lead to double counting in downstream analysis.
+*/
+
+-- Filter to active Mid-Market customers, excluding churned accounts
 WITH filtered_customers AS (
     SELECT 
         c.MAXIO_ID,
@@ -13,7 +21,7 @@ WITH filtered_customers AS (
       AND c.STAGE NOT IN ('Will Churn', 'Churn')
 ),
 
--- Active Autodesk Content Library transaction (assumes exactly one per customer)
+-- Get active Autodesk Content Library transactions for each customer
 acl_transactions AS (
     SELECT 
         fc.*,
@@ -35,7 +43,7 @@ acl_transactions AS (
       AND CURRENT_DATE BETWEEN t.START_DATE AND t.END_DATE
 ),
 
--- Sanity check: flag if any customer has more than one "active" ACL transaction
+-- Find customers with more than one active ACL transaction
 duplicate_active_acl AS (
     SELECT 
         MAXIO_ID,
@@ -45,6 +53,7 @@ duplicate_active_acl AS (
     HAVING COUNT(*) > 1
 )
 
+-- Output the customers and their duplicate count
 SELECT
     da.MAXIO_ID,
     fc.CUSTOMER_NAME,
