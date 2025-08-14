@@ -1,0 +1,200 @@
+WITH excluded_ids AS (
+    SELECT COLUMN1 AS MAXIO_ID FROM VALUES
+      ('2015-6406'),
+      ('2015-6606'),
+      ('2015-15328'),
+      ('2015-7480'),
+      ('2015-11412'),
+      ('2015-11346'),
+      ('2015-5480'),
+      ('2015-8195')
+),
+
+filtered_customers AS (
+    SELECT 
+        c.MAXIO_ID,
+        c.NAME as CUSTOMER_NAME,
+        c.PARTNER,
+        c.SEGMENT,
+        c.INDUSTRY,
+        c.STAGE,
+        c.PINNACLE_ID,
+        c.PINNACLE_USERS,
+        c.ACTIVE_ARR,
+        c.RENEWAL_DATE,
+        c.CURRENT_CUSTOMER
+    FROM INTERNAL_REPORTING.CORE.CUSTOMERS c
+    LEFT JOIN excluded_ids e ON c.MAXIO_ID = e.MAXIO_ID
+    WHERE c.CURRENT_CUSTOMER = 1 
+        AND c.SEGMENT = 'Midsize'
+        AND c.STAGE NOT IN ('Will Churn', 'Churn', 'Onboarding', 'Onboarding – Stalled')
+        AND COALESCE(c.PINNACLE_USERS, 0) > 0
+        AND e.MAXIO_ID IS NULL
+),
+
+-- Active Autodesk Content Library transaction per customer
+customer_transaction_periods AS (
+    SELECT 
+        fc.*,
+        t.START_DATE,
+        t.END_DATE
+    FROM filtered_customers fc
+    INNER JOIN INTERNAL_REPORTING.CORE.TRANSACTIONS t
+        ON fc.MAXIO_ID = t.MAXIO_ID
+    WHERE t.ITEM = 'Autodesk Content Library'
+        AND t.START_DATE IS NOT NULL 
+        AND t.END_DATE IS NOT NULL
+        AND t.AMOUNT > 0
+        AND CURRENT_DATE BETWEEN t.START_DATE AND t.END_DATE
+),
+
+customer_tenants AS (
+    SELECT 
+        c.*,
+        t.TENANT_ID,
+        t.NAME as TENANT_NAME,
+        t.EDITION,
+        t.IS_TRIAL,
+        t.MAX_LITE_USERS
+    FROM customer_transaction_periods c
+    LEFT JOIN INTERNAL_REPORTING.CORE.TENANTS t 
+        ON c.PINNACLE_ID = t.PINNACLE_ID
+),
+
+tenant_users_map AS (
+    SELECT DISTINCT
+        ct.MAXIO_ID, 
+        ct.CUSTOMER_NAME,
+        ct.PARTNER,
+        ct.SEGMENT,
+        ct.INDUSTRY,
+        ct.STAGE,
+        ct.PINNACLE_ID,
+        ct.PINNACLE_USERS,
+        ct.ACTIVE_ARR,
+        ct.RENEWAL_DATE,
+        ct.CURRENT_CUSTOMER,
+        ct.START_DATE,
+        ct.END_DATE,
+        ct.TENANT_ID,
+        ct.EDITION,
+        ct.TENANT_NAME,
+        ct.IS_TRIAL,
+        ct.MAX_LITE_USERS,
+        tu.USER_ID
+    FROM customer_tenants ct
+    INNER JOIN INTERNAL_REPORTING.CORE.TENANT_USERS tu 
+        ON ct.TENANT_ID = tu.TENANT_ID
+    WHERE ct.TENANT_ID IS NOT NULL
+),
+
+login_raw AS (
+    SELECT 
+        tum.MAXIO_ID,
+        tum.EDITION,
+        tum.CUSTOMER_NAME,
+        tum.ACTIVE_ARR,
+        tum.SEGMENT,
+        tum.INDUSTRY,
+        tum.STAGE,
+        tum.PINNACLE_USERS,
+        tum.RENEWAL_DATE,
+        tum.CURRENT_CUSTOMER,
+        tum.START_DATE,
+        tum.END_DATE,
+        tum.TENANT_ID,
+        l.USER_ID,
+        l.LOGIN_ID,
+        l.LOGIN_DATE
+    FROM tenant_users_map tum
+    LEFT JOIN PLATFORM_REPORTING_PROD.CORE.LOGINS l 
+        ON tum.USER_ID = l.USER_ID
+       AND l.LOGIN_DATE >= tum.START_DATE
+       AND l.LOGIN_DATE <= tum.END_DATE
+),
+
+customer_login_rollup AS (
+    SELECT
+        MAXIO_ID,
+        CUSTOMER_NAME,
+        ACTIVE_ARR,
+        SEGMENT,
+        INDUSTRY,
+        STAGE,
+        PINNACLE_USERS,
+        RENEWAL_DATE,
+        CURRENT_CUSTOMER,
+        MAX(EDITION) AS EDITION,
+        MIN(START_DATE) AS START_DATE,
+        MAX(END_DATE) AS END_DATE,
+        COUNT(LOGIN_ID) AS TOTAL_LOGINS,
+        COUNT(DISTINCT USER_ID) AS UNIQUE_USERS_WITH_LOGINS,
+        COUNT(DISTINCT DATE(LOGIN_DATE)) AS UNIQUE_LOGIN_DAYS,
+        MIN(LOGIN_DATE) AS FIRST_LOGIN_DATE,
+        MAX(LOGIN_DATE) AS LAST_LOGIN_DATE
+    FROM login_raw
+    GROUP BY 
+        MAXIO_ID,
+        CUSTOMER_NAME,
+        ACTIVE_ARR,
+        SEGMENT,
+        INDUSTRY,
+        STAGE,
+        PINNACLE_USERS,
+        RENEWAL_DATE,
+        CURRENT_CUSTOMER
+),
+
+base_metrics AS (
+    SELECT 
+        *,
+        CASE 
+            WHEN COALESCE(UNIQUE_LOGIN_DAYS, 0) > 0 
+            THEN ROUND(TOTAL_LOGINS * 1.0 / UNIQUE_LOGIN_DAYS, 2)
+            ELSE 0 
+        END AS AVG_LOGINS_PER_DAY,
+        CASE 
+            WHEN COALESCE(PINNACLE_USERS, 0) > 0 
+            THEN ROUND(UNIQUE_USERS_WITH_LOGINS * 1.0 / PINNACLE_USERS, 3)
+            ELSE 0 
+        END AS USER_ADOPTION_RATE,
+        CASE 
+            WHEN COALESCE(PINNACLE_USERS, 0) > 0 
+            THEN ROUND(TOTAL_LOGINS * 1.0 / PINNACLE_USERS, 2)
+            ELSE 0 
+        END AS USAGE_PER_USER
+    FROM customer_login_rollup
+),
+
+usage_scores AS (
+    SELECT 
+        *,
+        PERCENT_RANK() OVER (ORDER BY TOTAL_LOGINS) as LOGIN_SCORE,
+        PERCENT_RANK() OVER (ORDER BY UNIQUE_USERS_WITH_LOGINS) as USER_BREADTH_SCORE,
+        PERCENT_RANK() OVER (ORDER BY UNIQUE_LOGIN_DAYS) as CONSISTENCY_SCORE,
+        PERCENT_RANK() OVER (ORDER BY USER_ADOPTION_RATE) as ADOPTION_SCORE
+    FROM base_metrics
+)
+
+SELECT 
+    MAXIO_ID,
+    CUSTOMER_NAME,
+    START_DATE,
+    END_DATE,
+    ACTIVE_ARR,
+    STAGE,
+    PINNACLE_USERS,
+    EDITION,
+    TO_CHAR(START_DATE, 'MM-DD-YYYY') AS START_DATE,
+    TO_CHAR(END_DATE, 'MM-DD-YYYY') AS END_DATE,
+    TOTAL_LOGINS,
+    UNIQUE_USERS_WITH_LOGINS,
+
+    ROUND(
+        (COALESCE(LOGIN_SCORE, 0) * 0.35 + 
+         COALESCE(USER_BREADTH_SCORE, 0) * 0.25 + 
+         COALESCE(CONSISTENCY_SCORE, 0) * 0.25 + 
+         COALESCE(ADOPTION_SCORE, 0) * 0.15) * 100, 1
+    ) AS USAGE_SCORE
+FROM usage_scores
+WHERE PINNACLE_USERS <= '864'

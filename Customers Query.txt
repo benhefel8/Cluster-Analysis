@@ -1,0 +1,42 @@
+WITH latest_hs AS (
+  SELECT
+    hs.*,
+    ROW_NUMBER() 
+      OVER (
+        PARTITION BY hs.maxio_id 
+        ORDER BY hs.DATE_EOM DESC
+      ) AS rn
+  FROM REPORTS.HEALTH_SCORE_SNAPSHOTS AS hs
+),
+
+excluded_ids AS (
+    SELECT COLUMN1 AS MAXIO_ID FROM VALUES
+      ('2015-6406'),
+      ('2015-6606'),
+      ('2015-15328'),
+      ('2015-7480'),
+      ('2015-11412'),
+      ('2015-11346'),
+      ('2015-5480'),
+      ('2015-8195')
+)
+
+SELECT
+  c.Maxio_ID,
+  c.NAME,
+  c.segment,
+  c.CUSTOMER_SUCCESS_MANAGER,
+  c.PINNACLE_USERS,
+  c.ACTIVE_ARR,
+  c.RENEWAL_DATE,
+  lh.TOTAL_SCORE
+FROM CUSTOMERS AS c
+JOIN latest_hs AS lh
+  ON c.MAXIO_ID = lh.MAXIO_ID
+  AND lh.rn = 1     
+LEFT JOIN excluded_ids e ON c.MAXIO_ID = e.MAXIO_ID
+
+WHERE
+        c.SEGMENT = 'Midsize'
+        AND c.STAGE NOT IN ('Will Churn', 'Churn', 'Onboarding', 'Onboarding – Stalled')
+        AND COALESCE(c.PINNACLE_USERS, 0) > 0

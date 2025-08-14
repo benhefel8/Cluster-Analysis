@@ -1,0 +1,54 @@
+WITH filtered_customers AS (
+    SELECT 
+        c.MAXIO_ID,
+        c.NAME AS CUSTOMER_NAME,
+        c.PINNACLE_ID,
+        c.ACTIVE_ARR,
+        c.SEGMENT,
+        c.INDUSTRY,
+        c.STAGE
+    FROM INTERNAL_REPORTING.CORE.CUSTOMERS c
+    WHERE c.CURRENT_CUSTOMER = 1
+      AND c.SEGMENT = 'Midsize'
+      AND c.STAGE NOT IN ('Will Churn', 'Churn')
+),
+
+-- Active Autodesk Content Library transaction (assumes exactly one per customer)
+acl_transactions AS (
+    SELECT 
+        fc.*,
+        t.ORDER_DATE,
+        t.START_DATE,
+        t.END_DATE,
+        t.QUANTITY,
+        t.AMOUNT,
+        t.ARR,
+        t.NUMBER_FIELD,
+        t.ITEM AS SUBSCRIPTION_ITEM
+    FROM filtered_customers fc
+    INNER JOIN INTERNAL_REPORTING.CORE.TRANSACTIONS t
+        ON fc.MAXIO_ID = t.MAXIO_ID
+    WHERE t.ITEM = 'Autodesk Content Library'
+      AND t.START_DATE IS NOT NULL
+      AND t.END_DATE IS NOT NULL
+      AND t.AMOUNT > 0
+      AND CURRENT_DATE BETWEEN t.START_DATE AND t.END_DATE
+),
+
+-- Sanity check: flag if any customer has more than one "active" ACL transaction
+duplicate_active_acl AS (
+    SELECT 
+        MAXIO_ID,
+        COUNT(*) AS active_acl_count
+    FROM acl_transactions
+    GROUP BY MAXIO_ID
+    HAVING COUNT(*) > 1
+)
+
+SELECT
+    da.MAXIO_ID,
+    fc.CUSTOMER_NAME,
+    da.active_acl_count
+FROM duplicate_active_acl da
+JOIN filtered_customers fc
+  ON da.MAXIO_ID = fc.MAXIO_ID;
